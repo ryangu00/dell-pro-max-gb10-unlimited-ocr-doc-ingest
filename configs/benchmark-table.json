@@ -1,0 +1,10 @@
+{
+  "tables_per_page": 1,
+  "columns": 6,
+  "data_rows": 14,
+  "headers": [
+    {"text": "Site", "colspan": 1, "rowspan": 2},
+    {"text": "Output (units)", "colspan": 3, "rowspan": 1},
+    {"text": "Cost (USD)", "colspan": 2, "rowspan": 1}
+  ]
+}

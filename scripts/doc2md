@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+# /// script
+# dependencies = ["pymupdf==1.28.2"]
+# ///
+"""Convert synthetic documents with density routing and verified per-page OCR.
+
+Use an explicit interpreter path in minimal environments. OCR host and remote
+workspace are required configuration values; there is no default remote host.
+"""
+import argparse
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ocr_checks import check_tables, page_blocks, require_pages
+
+CHAR_SCAN, CHAR_CONF = 200, 600
+OFFICE = ('.docx', '.pptx', '.xlsx', '.xls', '.csv', '.html', '.htm', '.epub', '.json', '.xml')
+IMAGES = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif', '.gif')
+
+
+def pdf_text_density(path):
+    import pymupdf
+    try:
+        with pymupdf.open(path) as doc:
+            if doc.needs_pass:
+                raise ValueError(f'PDF is password-protected: {Path(path).name}')
+            n = min(len(doc), 100)
+            per = [len(doc[i].get_text()) for i in range(n)]
+            return (sum(per)/n, min(per), len(doc)) if per else (0.0, 0.0, 0)
+    except Exception as exc:
+        if str(exc).startswith('PDF is password-protected:'):
+            raise
+        raise ValueError(f'cannot open PDF ({Path(path).name}): {exc}') from exc
+
+
+def density_route(avg, minimum):
+    if avg < CHAR_SCAN:
+        return 'ocr', f'avg density {avg:.0f} chars/page < {CHAR_SCAN} (scanned)', False
+    if avg < CHAR_CONF:
+        return 'ocr', f'avg density {avg:.0f} low-confidence, conservative OCR', True
+    if minimum < 50:
+        return 'ocr', f'mixed PDF: avg {avg:.0f} but a page has only {minimum:.0f} chars', True
+    return 'markitdown', f'avg density {avg:.0f} chars/page (digital, min page {minimum:.0f})', False
+
+
+def atomic_write(out, body):
+    if not body.strip():
+        raise ValueError('refusing to write empty markdown')
+    out = Path(out)
+    # Exclusive publication also closes the race between checking and writing.
+    descriptor, name = tempfile.mkstemp(dir=out.parent, prefix='.doc2md-')
+    temp = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            stream.write(body)
+        os.link(temp, out)
+    except FileExistsError as exc:
+        raise ValueError('output already exists - refusing overwrite') from exc
+    finally:
+        temp.unlink()
+
+
+def run_markitdown(src, out):
+    binary = os.environ.get('DOC2MD_MARKITDOWN') or 'markitdown'
+    r = subprocess.run([binary, src], capture_output=True, text=True)
+    if r.returncode:
+        raise ValueError(f'markitdown failed: {r.stderr[:300]}')
+    if not r.stdout.strip():
+        raise ValueError('markitdown produced empty output - refusing to write empty markdown')
+    atomic_write(out, r.stdout)
+
+
+def remote_config():
+    host = os.environ.get('DOC2MD_OCR_HOST', '')
+    root = os.environ.get('DOC2MD_OCR_HOME', '')
+    image = os.environ.get('DOC2MD_OCR_IMAGE', 'ocr-docs:local')
+    if not host or not root:
+        raise ValueError('set DOC2MD_OCR_HOST and DOC2MD_OCR_HOME before OCR')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', host):
+        raise ValueError('DOC2MD_OCR_HOST must be an SSH host or alias without shell syntax')
+    if not re.fullmatch(r'/[A-Za-z0-9_./-]+', root) or '..' in PurePosixPath(root).parts or root.rstrip('/') == '':
+        raise ValueError('DOC2MD_OCR_HOME must be an absolute, non-root workspace path without spaces')
+    root = str(PurePosixPath(root))
+    need = int(os.environ.get('DOC2MD_MIN_AVAIL_GIB', '32'))
+    if need < 1:
+        raise ValueError('DOC2MD_MIN_AVAIL_GIB must be positive')
+    return host, root, image, need
+
+
+def run_ocr(src, out, max_pages, schema=None):
+    host, root, image, need = remote_config()
+    ext = Path(src).suffix.lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,8}', ext):
+        ext = '.bin'
+    expected = 1
+    if Path(src).suffix.lower() == '.pdf':
+        _, _, total = pdf_text_density(src)
+        expected = min(total, max_pages)
+        if total > max_pages:
+            print(f'[doc2md] warn: partial by request: --max-pages selects {expected}/{total}', file=sys.stderr)
+    if not expected:
+        raise ValueError('PDF contains no pages')
+    def ssh(command):
+        return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, command],
+                              capture_output=True, text=True)
+    r = ssh("awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo")
+    if r.returncode:
+        raise ValueError(f'OCR host unreachable ({host}): {r.stderr[:200]}')
+    try:
+        available = int(r.stdout.strip())
+    except ValueError as exc:
+        raise ValueError('cannot read OCR host MemAvailable - refusing to run') from exc
+    if available < need:
+        raise ValueError(f'available {available} GiB < {need} GiB - OCR refuses to run; use an idle window')
+    with tempfile.TemporaryDirectory(prefix='.doc2md-', dir=Path(out).parent) as local:
+        job = Path(local).name
+        remote_dir = f'{root}/jobs/{job}'
+        container_job = f'/ws/jobs/{job}'
+        try:
+            r = ssh('mkdir -p '+shlex.quote(remote_dir))
+            if r.returncode:
+                raise ValueError(f'OCR workspace creation failed: {r.stderr[:200]}')
+            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', src, f'{host}:{remote_dir}/input{ext}'], capture_output=True, text=True)
+            if r.returncode:
+                raise ValueError(f'OCR input copy failed: {r.stderr[:200]}')
+            command = ['docker', 'run', '--rm', '--gpus', 'all', '--ipc=host', '--memory=30g', '--memory-swap=30g',
+                       '-v', f'{root}:/ws', image, 'python3', '/ws/scripts/uocr_batch.py',
+                       f'{container_job}/input{ext}', f'{container_job}/out', str(max_pages)]
+            r = ssh(shlex.join(command))
+            if r.returncode or 'UOCR_DONE' not in r.stdout.splitlines():
+                raise ValueError(f'OCR run failed (rc={r.returncode}): {(r.stdout+r.stderr)[-400:]}')
+            r = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', f'{host}:{remote_dir}/out/result*.md', local], capture_output=True, text=True)
+            if r.returncode:
+                raise ValueError(f'OCR produced no result*.md (scp: {r.stderr[:200]})')
+            files = list(Path(local).glob('result*.md'))
+            wanted = [Path(local)/f'result_page{i:03d}.md' for i in range(1, expected+1)]
+            recovered = sum(p.is_file() and bool(p.read_text().strip()) for p in wanted)
+            if recovered != expected or set(files) != set(wanted):
+                raise ValueError(f'OCR page coverage {recovered}/{expected} - refusing partial or unexpected output')
+            pages = []
+            for path in wanted:
+                body = path.read_text()
+                require_pages(body, 1)
+                body = page_blocks(body)[0]
+                check_tables(body, schema)
+                pages.append(body)
+            body = '\n'.join('<PAGE>\n'+p for p in pages)+'\n'
+            require_pages(body, expected)
+            atomic_write(out, body)
+        finally:
+            command = f'rm -rf {shlex.quote(remote_dir)} 2>/dev/null || sudo -n rm -rf {shlex.quote(remote_dir)}'
+            try:
+                r = ssh(command)
+                if r.returncode:
+                    print('[doc2md] warn: remote cleanup failed', file=sys.stderr)
+            except OSError:
+                print('[doc2md] warn: remote cleanup unavailable', file=sys.stderr)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('file')
+    p.add_argument('-o', '--out')
+    p.add_argument('--engine', choices=['auto', 'markitdown', 'ocr'], default='auto')
+    def positive_int(value):
+        number = int(value)
+        if number < 1:
+            raise argparse.ArgumentTypeError('must be >= 1')
+        return number
+    p.add_argument('--max-pages', type=positive_int, default=200)
+    p.add_argument('--table-schema', help='known layout JSON; checked on every OCR page')
+    a = p.parse_args(argv)
+    try:
+        src = Path(a.file).absolute()
+        out = Path(a.out).absolute() if a.out else src.with_suffix('.md')
+        if not src.is_file():
+            raise ValueError(f'not found: {src}')
+        if src.resolve() == out.resolve() or (out.exists() and os.path.samefile(src, out)):
+            raise ValueError('output would overwrite input - pass a different -o')
+        if out.exists() or out.is_symlink():
+            raise ValueError('output already exists - refusing overwrite')
+        engine, reason = a.engine, 'manual'
+        if engine == 'auto':
+            if src.suffix.lower() in OFFICE:
+                engine, reason = 'markitdown', f'office format {src.suffix.lower()}'
+            elif src.suffix.lower() in IMAGES:
+                engine, reason = 'ocr', 'image input'
+            elif src.suffix.lower() == '.pdf':
+                avg, minimum, _ = pdf_text_density(str(src))
+                engine, reason, warn = density_route(avg, minimum)
+                if warn:
+                    print(f'[doc2md] warn: mixed/low text layer; {reason}', file=sys.stderr)
+            else:
+                engine, reason = 'markitdown', f'default for {src.suffix.lower() or "no ext"}'
+        print(f'[doc2md] engine={engine} ({reason})', file=sys.stderr)
+        schema = json.loads(Path(a.table_schema).read_text()) if a.table_schema else None
+        if schema and engine != 'ocr':
+            raise ValueError('--table-schema requires OCR; pass --engine ocr')
+        if engine == 'markitdown':
+            run_markitdown(str(src), str(out))
+        else:
+            run_ocr(str(src), str(out), a.max_pages, schema)
+        print(out)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        p.exit(1, str(exc)+'\n')
+
+
+if __name__ == '__main__':
+    main()
