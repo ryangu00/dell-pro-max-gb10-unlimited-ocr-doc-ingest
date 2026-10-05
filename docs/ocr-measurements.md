@@ -181,14 +181,17 @@ Same pages, same node, different call. "Truth cells found" uses the same ground 
 
 - **One synthetic layout.** Bordered tables with a fixed header shape and random-word prose at about 800 characters per page. A different layout, density, language, scan quality or handwriting can change every number. A page with less text may tolerate more pages per call; a denser one fewer. No claim is made about real documents.
 - **One seed, one image, one node, one driver version.** Repeat runs here were deterministic (identical output files), so the repeats confirm timing, not the quality result. Results with a different model commit, image, or driver may differ. The model commit used here is not the current upstream head.
-- **The break point for multi-page mode is unknown.** Only 1, 3, 10 and 40 pages were run. The 10-page result was already damaged; the 40-page result was a collapse; nothing between was tested, and the single-image setting was not run at 40 pages.
-- **The single-image 10-page result is one run**, and the single-image 40-page case was not run.
+- **The break point for multi-page mode is unknown.** Only 1, 3, 10 and 40-page multi-page cases were run. The 10-page result was already damaged; the 40-page result was a collapse; nothing between was tested.
+- **The single-image 10-page benchmark result is one run.** Per-page OCR at 10 and 40 pages was also run once each through the production converter on 2026-10-04 (see the production follow-up in [results](results.md)); per-page OCR beyond 40 pages was not measured.
 - **Cause of the 40-page collapse and of the dropped columns is not established.** The data show the failure and its repeatability, not why.
-- **End-to-end converter time was not measured.** These are container runs on the node; SSH, file copy up and result copy back are not included. The historical converter itself was not run, so its warnings and exit codes at 10 and 40 pages are read from its code, not observed. The public adaptation fails on a coverage mismatch and has offline mock tests only.
+- **The benchmark did not measure end-to-end converter time.** These are container runs on the node; SSH, file copy up and result copy back are not included. The production follow-up in [results](results.md) does measure end-to-end time for the per-page converter (149 s for 10 pages, 432 s for 40 pages, one run each). The historical converter itself was not run, so its warnings and exit codes at 10 and 40 pages are read from its code, not observed. The public adaptation fails on a coverage mismatch and has offline mock tests only.
 - **Cold start was not isolated.** Runs went back to back; a first-ever model load after a long idle may be slower.
 - **The 32 GiB guard** in the converter is judged against a single corpus; it is not a safe-for-all-documents number.
 - **GPU-side memory and the software versions inside the image** (PyTorch, CUDA) were not measured or queried.
 - **No comparison with the text-extraction engine's accuracy on this corpus** was done, because the corpus has no text layer; that engine returns nothing for it by construction.
+- **Both production runs used the converter version before a final review fix** (copy-back failure handling and the warning matcher); that fix does not touch the success path. The final version was run end to end only on a 3-page scan (252/252 cells, 42/42 rows, CER 0.000).
+- **Documents longer than 40 pages, real (non-synthetic) documents, and a page-count mismatch on real hardware** were not tested.
+- **Per-page results at 10 and 40 pages are each one run**; repeatability is not established.
 
 ## 9. Cleanup and reproducibility
 
@@ -255,4 +258,4 @@ For example, a displayed wall value may have fewer decimals than its raw JSON va
 **Procedure:** retain a common synthetic ground truth across page-count and call-setting variants.
 **What did not work:** a process return code, completion sentinel, and page markers were insufficient at 10 pages.
 **Rule:** infer per page within one model load, then require recovered pages and validate the expected table shape before accepting output.
-The per-page 40-page case and the causes of the multi-page failures remain open.
+The per-page 40-page case was measured once; the causes of the multi-page failures remain open, and per-page OCR beyond 40 pages was not tested.

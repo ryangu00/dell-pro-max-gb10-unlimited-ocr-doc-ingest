@@ -53,6 +53,15 @@ Conditions: same node, corpus, image, and revision; variants change only the cal
 | 3-page single repeat 2 | single-image setting per page | 3 | 77.9 | 44.6 | 26.6 | 8.87 | 13.9 |
 | 10-page single repeat 1 | single-image setting per page | 10 | 145.8 | 44.8 | 86.1 | 8.61 | 13.7 |
 
+## Production follow-up: per-page OCR at 10 and 40 pages
+
+Conditions: production converter, per-page OCR in one model load, same synthetic corpus and node as the benchmark, 2026-10-04, one run each. End-to-end wall time includes model load, rasterisation and file transfer (not comparable to the OCR-only times in the benchmark tables).
+
+| Input | Exit code | End-to-end wall time | Table cells correct | Rows exact | Prose CER | Host available-memory drop |
+|---|---|---|---|---|---|---|
+| 10-page scan | 0 | 149 s | 840/840 | 140/140 | 0.000 | 14.6 GiB |
+| 40-page scan | 0 | 432 s | 3360/3360 | 560/560 | 0.001 | 14.8 GiB |
+
 ## Medians
 
 Conditions: medians of the original-setting runs above; the failed 40-page generation is not usable throughput.
@@ -281,7 +290,7 @@ Conditions: download observation dated 2026-07-21; layer inspection from the 202
 ## Interpreting the numbers
 
 "Other" is wall time minus model load minus OCR time.
-Wall time here excludes SSH and file transfer; all runs were measured on the node.
+In the benchmark and setting-comparison tables, wall time excludes SSH and file transfer; those runs were measured on the node. The production follow-up above is timed end to end, including model load, rasterisation and file transfer.
 The original 40-page setting produced a failed generation, so its wall/page figure is not successful throughput.
 The host drop is a sampled lower bound, and container memory is a separately sampled quantity.
 The 32 GiB guard leaves about 0.3 GiB above the 31.7 GiB host drop; its adequacy for other layouts is unknown.

@@ -39,10 +39,10 @@ Conditions: original synthetic benchmark settings, 2026-10-04, no overlapping co
 | 10 | 14.0 to 14.4 | 6.59 to 6.79 | Similar host effect |
 | 40 | 31.5 to 31.7 | 6.91 to 6.94 | Larger early OCR-phase drop |
 
-A 32 GiB threshold would leave about 0.3 GiB above the sampled 31.7 GiB drop.
+A 32 GiB threshold would leave about 0.3 GiB above the sampled 31.7 GiB multi-page drop.
 That is almost no operating margin; the threshold must not be advertised as safe for that workload.
 The 40-page case used multi-page inference and produced unusable output.
-The per-page setting was not measured at 40 pages, so its long-document memory requirement remains unknown.
+The per-page setting at 40 pages was measured on 2026-10-04 at a 14.8 GiB host drop, leaving about 17 GiB under the 32 GiB guard (one run); its long-document memory requirement beyond 40 pages remains unknown.
 
 `MemAvailable` includes reclaimable page cache, and 1 Hz sampling can miss transient peaks.
 These values are lower bounds on the observed host effect, not GPU allocation measurements.

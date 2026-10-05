@@ -187,6 +187,17 @@ Looping inside one model load avoids paying that cost for every page.
 The shipped converter implements the per-page design and fails before publishing incomplete or shape-invalid Markdown.
 That public adaptation has offline mock validation; these GPU measurements came from the original script and its measured variant.
 
+### Production follow-up: per-page OCR at 10 and 40 pages (2026-10-04)
+
+Conditions: production converter, per-page OCR in one model load, same synthetic corpus and node as the benchmark, 2026-10-04, one run each. End-to-end wall time includes model load, rasterisation and file transfer (not comparable to the OCR-only times in the benchmark tables).
+
+| Input | Exit code | End-to-end wall time | Table cells correct | Rows exact | Prose CER | Host available-memory drop |
+|---|---|---|---|---|---|---|
+| 10-page scan | 0 | 149 s | 840/840 | 140/140 | 0.000 | 14.6 GiB |
+| 40-page scan | 0 | 432 s | 3360/3360 | 560/560 | 0.001 | 14.8 GiB |
+
+The multi-page call at 40 pages recovered 1 of 40 pages and dropped host available memory by 31.5-31.7 GiB (see "Sharing the box").
+
 ## Routing by text-layer density
 
 **Problem.** The first routing version averaged only the first 8 pages and could miss a later scanned page.
@@ -287,8 +298,8 @@ Conditions: original call settings, synthetic corpus, host sampling at 1 Hz; dro
 
 **What did not work.** Docker accounting missed much of the host effect.
 The 31.7 GiB host drop exceeded the 30 GiB container cap; the mechanism was not isolated.
-A 32 GiB guard leaves about 0.3 GiB margin in the 40-page case, almost none.
-This was multi-page inference; per-page inference at 40 pages was not measured.
+A 32 GiB guard leaves about 0.3 GiB margin for the multi-page call at 40 pages, almost none.
+Per-page inference at 40 pages was measured on 2026-10-04 at a 14.8 GiB host drop, leaving about 17 GiB under the 32 GiB guard (one run).
 
 **Rule.** Schedule OCR in an idle window and judge capacity from host-level measurements.
 Do not treat 32 GiB as a safe-for-all-documents threshold.
@@ -386,15 +397,18 @@ See [expanded pitfalls](docs/pitfalls.md) for triggers, limits, and evidence sta
 ## Limits and open questions
 
 - One synthetic layout, seed, image, node, and driver; no claim about handwriting, other languages, or other scan densities.
-- The per-page 10-page result is one run. Per-page OCR at 40 pages was not measured.
+- The per-page results are one run each (10 and 40 pages); per-page OCR beyond 40 pages was not measured.
 - Only 1, 3, 10, and 40-page multi-page cases were studied; the break point and failure cause remain unknown.
 - Cold start was not isolated; the model-load modes around 37 s and 44 s have no established cause.
-- Timing excludes SSH and copies. The adapted public wrapper was not exercised against a GPU during book assembly.
+- Benchmark timings exclude SSH and copies; the production follow-up times are end to end (model load, rasterisation and file transfer). The adapted public wrapper was not exercised against a GPU during book assembly.
 - Host-memory samples can miss spikes; GPU-side memory was not sampled. The 32 GiB guard is not a universal guarantee.
 - Density misses junk text layers and table structure; known-layout validation cannot prove arbitrary document accuracy.
 - Runtime auxiliary packages, Pillow, NumPy, PyTorch, and CUDA are not all version-recorded; the equivalent Dockerfile is unbuilt.
 - Full PDF rendering needs PyMuPDF; offline mock tests do not prove installed PDF, image, or GPU dependencies work.
 - Crop images are not returned by the wrapper. Spreadsheet and Word quirks, store integration, and cross-file model reuse remain open.
+- Both production runs used the converter version before a final review fix (copy-back failure handling and the warning matcher); that fix does not touch the success path. The final version was run end to end only on a 3-page scan (252/252 cells, 42/42 rows, CER 0.000).
+- Documents longer than 40 pages, real (non-synthetic) documents, and a page-count mismatch on real hardware were not tested.
+- Per-page results are one run each; repeatability at 10 and 40 pages is not established.
 
 ## Files
 
